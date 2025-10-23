@@ -1,0 +1,108 @@
+# Headless Service для StatefulSet
+# Необходим для обеспечения стабильных сетевых идентификаторов подов
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: scaletestapp-headless
+  labels:
+    app: scaletestapp
+spec:
+  clusterIP: None  # Headless service (без ClusterIP)
+  selector:
+    app: scaletestapp
+  ports:
+  - port: 8080
+    targetPort: 8080
+    name: http
+
+# LoadBalancer Service с NodePort для внешнего доступа
+# Распределяет трафик по всем подам StatefulSet (round robin)
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: scaletestapp-lb
+  labels:
+    app: scaletestapp
+spec:
+  type: NodePort
+  externalTrafficPolicy: Local  # Трафик направляется только на локальные поды (на той же ноде)
+  selector:
+    app: scaletestapp  # Селектор для всех подов StatefulSet
+  ports:
+  - port: 8080
+    targetPort: 8080
+    nodePort: 30000  # Внешний порт на ноде
+    name: http
+  sessionAffinity: None  # Round robin балансировка
+
+# StatefulSet для приложения Scale Test App с автомасштабированием
+# Создаёт поды с предсказуемыми именами (scaletestapp-0, scaletestapp-1, ...)
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: scaletestapp
+spec:
+  serviceName: scaletestapp-headless  # Ссылка на headless service
+  replicas: 1  # Начальное количество подов (будет управляться HPA)
+  selector:
+    matchLabels:
+      app: scaletestapp
+  template:
+    metadata:
+      labels:
+        app: scaletestapp
+    spec:
+      containers:
+      - name: scaletestapp
+        # Образ приложения Scale Test App из Yandex Practicum
+        image: ghcr.io/yandex-practicum/scaletestapp:latest
+        ports:
+        - containerPort: 8080  # Порт приложения
+          name: http
+        resources:
+          requests:  # Минимальные ресурсы для запуска
+            memory: 40Mi
+          limits:  # Максимальные ресурсы
+            memory: 120Mi
+
+# Horizontal Pod Autoscaler
+# Автоматически масштабирует количество подов на основе потребления памяти
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: scaletestapp-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: StatefulSet
+    name: scaletestapp
+  minReplicas: 1  # Минимальное количество подов
+  maxReplicas: 10  # Максимальное количество подов
+  metrics:
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: AverageValue
+        averageValue: 30Mi  # Целевое абсолютное значение памяти на под
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 30  # Ожидание полминуты перед уменьшением количества подов
+      policies:
+      - type: Percent
+        value: 50  # Уменьшать не более чем на 50% подов за раз
+        periodSeconds: 60
+    scaleUp:
+      stabilizationWindowSeconds: 0  # Немедленное увеличение при необходимости
+      policies:
+      - type: Percent
+        value: 100  # Увеличивать до 100% (удваивать) за раз
+        periodSeconds: 5
+      - type: Pods
+        value: 2  # Или добавлять максимум 2 пода за раз
+        periodSeconds: 5
+      selectPolicy: Max  # Выбирать максимальное значение из политик
