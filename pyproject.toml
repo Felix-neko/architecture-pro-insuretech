@@ -1,0 +1,9 @@
+[project]
+name = "architecture-pro-insuretech"
+version = "0.1.0"
+description = "Add your description here"
+requires-python = ">=3.8"
+dependencies = [
+    "locust",
+    "pyspark==3.4.4",
+]
