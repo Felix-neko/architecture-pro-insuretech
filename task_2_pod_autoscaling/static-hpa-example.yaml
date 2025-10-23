@@ -1,0 +1,113 @@
+# Headless Service для StatefulSet
+# Необходим для обеспечения стабильных сетевых идентификаторов подов
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: scaletestapp-headless
+  labels:
+    app: scaletestapp
+spec:
+  clusterIP: None  # Headless service (без ClusterIP)
+  selector:
+    app: scaletestapp
+  ports:
+  - port: 8080
+    targetPort: 8080
+    name: http
+
+# NodePort Service для пода scaletestapp-0
+# Обеспечивает внешний доступ к первому экземпляру приложения через порт 30000
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: scaletestapp-0
+  labels:
+    app: scaletestapp
+    statefulset.kubernetes.io/pod-name: scaletestapp-0
+spec:
+  type: NodePort
+  selector:
+    app: scaletestapp
+    statefulset.kubernetes.io/pod-name: scaletestapp-0  # Селектор для конкретного пода
+  ports:
+  - port: 8080
+    targetPort: 8080
+    nodePort: 30000  # Внешний порт на ноде
+    name: http
+
+# NodePort Service для пода scaletestapp-1
+# Обеспечивает внешний доступ ко второму экземпляру приложения через порт 30001
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: scaletestapp-1
+  labels:
+    app: scaletestapp
+    statefulset.kubernetes.io/pod-name: scaletestapp-1
+spec:
+  type: NodePort
+  selector:
+    app: scaletestapp
+    statefulset.kubernetes.io/pod-name: scaletestapp-1  # Селектор для конкретного пода
+  ports:
+  - port: 8080
+    targetPort: 8080
+    nodePort: 30001  # Внешний порт на ноде
+    name: http
+
+# NodePort Service для пода scaletestapp-2
+# Обеспечивает внешний доступ к третьему экземпляру приложения через порт 30002
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: scaletestapp-2
+  labels:
+    app: scaletestapp
+    statefulset.kubernetes.io/pod-name: scaletestapp-2
+spec:
+  type: NodePort
+  selector:
+    app: scaletestapp
+    statefulset.kubernetes.io/pod-name: scaletestapp-2  # Селектор для конкретного пода
+  ports:
+  - port: 8080
+    targetPort: 8080
+    nodePort: 30002  # Внешний порт на ноде
+    name: http
+
+# StatefulSet для приложения Scale Test App
+# Создаёт 3 экземпляра приложения с предсказуемыми именами и стабильными идентификаторами
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: scaletestapp
+spec:
+  serviceName: scaletestapp-headless  # Ссылка на headless service
+  replicas: 3  # Количество экземпляров приложения
+  selector:
+    matchLabels:
+      app: scaletestapp
+  template:
+    metadata:
+      labels:
+        app: scaletestapp
+    spec:
+      containers:
+      - name: scaletestapp
+        # Образ приложения Scale Test App из Yandex Practicum
+        image: ghcr.io/yandex-practicum/scaletestapp:latest
+        ports:
+        - containerPort: 8080  # Порт приложения
+          name: http
+        resources:
+          requests:  # Минимальные ресурсы для запуска
+#            cpu: 100m
+            memory: 20Mi
+          limits:  # Максимальные ресурсы
+#            cpu: 500m
+            memory: 30Mi
