@@ -16,27 +16,6 @@ spec:
     targetPort: 8080
     name: http
 
-# LoadBalancer Service с NodePort для внешнего доступа
-# Распределяет трафик по всем подам StatefulSet (round robin)
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: scaletestapp-lb
-  labels:
-    app: scaletestapp
-spec:
-  type: NodePort
-  externalTrafficPolicy: Local  # Трафик направляется только на локальные поды (на той же ноде)
-  selector:
-    app: scaletestapp  # Селектор для всех подов StatefulSet
-  ports:
-  - port: 8080
-    targetPort: 8080
-    nodePort: 30000  # Внешний порт на ноде
-    name: http
-  sessionAffinity: None  # Round robin балансировка
-
 # StatefulSet для приложения Scale Test App с автомасштабированием
 # Создаёт поды с предсказуемыми именами (scaletestapp-0, scaletestapp-1, ...)
 ---
