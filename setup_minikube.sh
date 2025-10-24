@@ -13,6 +13,9 @@ minikube addons enable metrics-server
 minikube addons enable default-storageclass
 minikube addons enable storage-provisioner
 minikube addons enable metrics-server
+minikube addons enable ingress
+minikube addons enable istio-provisioner
+minikube addons enable istio
 
 echo "Проверяем статус minikube:"
 minikube status

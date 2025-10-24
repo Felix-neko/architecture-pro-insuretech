@@ -1,20 +1,21 @@
-# Headless Service для StatefulSet
-# Необходим для обеспечения стабильных сетевых идентификаторов подов
+# ClusterIP Service для StatefulSet
+# Используется для маршрутизации трафика от Istio IngressGateway к подам
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: scaletestapp-headless
+  name: scaletestapp-service
   labels:
     app: scaletestapp
 spec:
-  clusterIP: None  # Headless service (без ClusterIP)
+  type: ClusterIP
   selector:
     app: scaletestapp
   ports:
   - port: 8080
     targetPort: 8080
     name: http
+    protocol: TCP
 
 # StatefulSet для приложения Scale Test App с автомасштабированием
 # Создаёт поды с предсказуемыми именами (scaletestapp-0, scaletestapp-1, ...)
@@ -24,8 +25,8 @@ kind: StatefulSet
 metadata:
   name: scaletestapp
 spec:
-  serviceName: scaletestapp-headless  # Ссылка на headless service
-  replicas: 1  # Начальное количество подов (будет управляться HPA)
+  serviceName: scaletestapp-service
+  replicas: 2  # Начальное количество подов (будет управляться HPA)
   selector:
     matchLabels:
       app: scaletestapp
@@ -33,6 +34,7 @@ spec:
     metadata:
       labels:
         app: scaletestapp
+        version: v1
     spec:
       containers:
       - name: scaletestapp
@@ -59,7 +61,7 @@ spec:
     apiVersion: apps/v1
     kind: StatefulSet
     name: scaletestapp
-  minReplicas: 1  # Минимальное количество подов
+  minReplicas: 2  # Минимальное количество подов
   maxReplicas: 10  # Максимальное количество подов
   metrics:
   - type: Resource
@@ -85,3 +87,323 @@ spec:
         value: 2  # Или добавлять максимум 2 пода за раз
         periodSeconds: 5
       selectPolicy: Max  # Выбирать максимальное значение из политик
+
+# ServiceAccount для частного IngressGateway
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: private-ingressgateway-sa
+
+# Deployment частного Istio IngressGateway
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: private-ingressgateway
+  labels:
+    app: private-ingressgateway
+    istio: private-ingressgateway
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: private-ingressgateway
+      istio: private-ingressgateway
+  template:
+    metadata:
+      labels:
+        app: private-ingressgateway
+        istio: private-ingressgateway
+      annotations:
+        # Включаем Prometheus scraping для метрик
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "15020"
+        prometheus.io/path: "/stats/prometheus"
+        sidecar.istio.io/inject: "false"
+    spec:
+      serviceAccountName: private-ingressgateway-sa
+      containers:
+      - name: istio-proxy
+        image: docker.io/istio/proxyv2:1.20.0
+        args:
+        - proxy
+        - router
+        - --domain
+        - $(POD_NAMESPACE).svc.cluster.local
+        - --proxyLogLevel=warning
+        - --proxyComponentLogLevel=misc:error
+        - --log_output_level=default:info
+        ports:
+        - containerPort: 15021
+          protocol: TCP
+          name: status-port
+        - containerPort: 8080
+          protocol: TCP
+          name: http
+        - containerPort: 15090
+          protocol: TCP
+          name: http-envoy-prom
+        env:
+        - name: PILOT_CERT_PROVIDER
+          value: istiod
+        - name: CA_ADDR
+          value: istiod.istio-system.svc:15012
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: INSTANCE_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+        - name: HOST_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.hostIP
+        - name: SERVICE_ACCOUNT
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.serviceAccountName
+        - name: ISTIO_META_WORKLOAD_NAME
+          value: private-ingressgateway
+        - name: ISTIO_META_OWNER
+          value: kubernetes://apis/apps/v1/namespaces/hpa-example/deployments/private-ingressgateway
+        - name: ISTIO_META_MESH_ID
+          value: cluster.local
+        - name: TRUST_DOMAIN
+          value: cluster.local
+        - name: ISTIO_META_UNPRIVILEGED_POD
+          value: "true"
+        - name: ISTIO_META_CLUSTER_ID
+          value: Kubernetes
+        - name: ISTIO_META_ROUTER_MODE
+          value: sni-dnat
+        securityContext:
+          capabilities:
+            drop:
+            - ALL
+          runAsUser: 1337
+          runAsGroup: 1337
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 2000m
+            memory: 1024Mi
+        readinessProbe:
+          httpGet:
+            path: /healthz/ready
+            port: 15021
+          initialDelaySeconds: 1
+          periodSeconds: 2
+          failureThreshold: 30
+        livenessProbe:
+          httpGet:
+            path: /healthz/ready
+            port: 15021
+          initialDelaySeconds: 1
+          periodSeconds: 10
+          failureThreshold: 3
+        volumeMounts:
+        - name: workload-socket
+          mountPath: /var/run/secrets/workload-spiffe-uds
+        - name: credential-socket
+          mountPath: /var/run/secrets/credential-uds
+        - name: workload-certs
+          mountPath: /var/run/secrets/workload-spiffe-credentials
+        - name: istio-envoy
+          mountPath: /etc/istio/proxy
+        - name: config-volume
+          mountPath: /etc/istio/config
+        - name: istiod-ca-cert
+          mountPath: /var/run/secrets/istio
+        - name: istio-token
+          mountPath: /var/run/secrets/tokens
+          readOnly: true
+        - name: istio-data
+          mountPath: /var/lib/istio/data
+        - name: podinfo
+          mountPath: /etc/istio/pod
+        - name: ingressgateway-certs
+          mountPath: /etc/istio/ingressgateway-certs
+          readOnly: true
+        - name: ingressgateway-ca-certs
+          mountPath: /etc/istio/ingressgateway-ca-certs
+          readOnly: true
+      volumes:
+      - name: workload-socket
+        emptyDir: {}
+      - name: credential-socket
+        emptyDir: {}
+      - name: workload-certs
+        emptyDir: {}
+      - name: istio-envoy
+        emptyDir: {}
+      - name: istio-data
+        emptyDir: {}
+      - name: istiod-ca-cert
+        configMap:
+          name: istio-ca-root-cert
+      - name: istio-token
+        projected:
+          sources:
+          - serviceAccountToken:
+              audience: istio-ca
+              expirationSeconds: 43200
+              path: istio-token
+      - name: podinfo
+        downwardAPI:
+          items:
+          - path: "labels"
+            fieldRef:
+              fieldPath: metadata.labels
+          - path: "annotations"
+            fieldRef:
+              fieldPath: metadata.annotations
+      - name: config-volume
+        configMap:
+          name: istio
+          optional: true
+      - name: ingressgateway-certs
+        secret:
+          secretName: istio-ingressgateway-certs
+          optional: true
+      - name: ingressgateway-ca-certs
+        secret:
+          secretName: istio-ingressgateway-ca-certs
+          optional: true
+
+# NodePort Service для частного IngressGateway
+# Обеспечивает внешний доступ на порту 30000
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: private-ingressgateway
+  labels:
+    app: private-ingressgateway
+    istio: private-ingressgateway
+  annotations:
+    # Аннотации для Prometheus scraping
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "15020"
+    prometheus.io/path: "/stats/prometheus"
+spec:
+  type: NodePort
+  selector:
+    app: private-ingressgateway
+    istio: private-ingressgateway
+  ports:
+  - name: http
+    port: 80
+    targetPort: 8080
+    nodePort: 30000
+    protocol: TCP
+  - name: status-port
+    port: 15020
+    targetPort: 15020
+    nodePort: 30001
+    protocol: TCP
+  - name: http-envoy-prom
+    port: 15090
+    targetPort: 15090
+    protocol: TCP
+
+# Gateway для маршрутизации трафика через частный IngressGateway
+---
+apiVersion: networking.istio.io/v1beta1
+kind: Gateway
+metadata:
+  name: scaletestapp-gateway
+spec:
+  selector:
+    istio: private-ingressgateway
+  servers:
+  - port:
+      number: 80
+      name: http
+      protocol: HTTP
+    hosts:
+    - "*"
+
+# VirtualService для маршрутизации к scaletestapp
+---
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: scaletestapp-vs
+spec:
+  hosts:
+  - "*"
+  gateways:
+  - scaletestapp-gateway
+  http:
+  - match:
+    - uri:
+        prefix: "/"
+    route:
+    - destination:
+        host: scaletestapp-service.hpa-example.svc.cluster.local
+        port:
+          number: 8080
+
+# EnvoyFilter для per-pod rate limiting (200 RPS на под)
+# Применяется к sidecar'ам подов scaletestapp через workloadSelector
+---
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
+metadata:
+  name: scaletestapp-local-ratelimit
+spec:
+  workloadSelector:
+    labels:
+      app: scaletestapp
+  configPatches:
+  # Patch 1: Добавляем HTTP фильтр local_ratelimit в цепочку фильтров
+  - applyTo: HTTP_FILTER
+    match:
+      context: SIDECAR_INBOUND
+      listener:
+        filterChain:
+          filter:
+            name: "envoy.filters.network.http_connection_manager"
+            subFilter:
+              name: "envoy.filters.http.router"
+    patch:
+      operation: INSERT_BEFORE
+      value:
+        name: envoy.filters.http.local_ratelimit
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit
+          stat_prefix: http_local_rate_limiter
+          token_bucket:
+            max_tokens: 200
+            tokens_per_fill: 200
+            fill_interval: 1s
+          filter_enabled:
+            runtime_key: local_rate_limit_enabled
+            default_value:
+              numerator: 100
+              denominator: HUNDRED
+          filter_enforced:
+            runtime_key: local_rate_limit_enforced
+            default_value:
+              numerator: 100
+              denominator: HUNDRED
+          response_headers_to_add:
+          - append: false
+            header:
+              key: x-local-rate-limit
+              value: 'true'
+          status:
+            code: 429
