@@ -1,0 +1,24 @@
+# ServiceMonitor для сбора метрик с частного Istio IngressGateway
+# Prometheus будет автоматически обнаруживать и собирать метрики
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: private-ingressgateway-metrics
+  namespace: hpa-example
+  labels:
+    app: private-ingressgateway
+    release: prometheus  # Важно: должен совпадать с release name Prometheus
+spec:
+  selector:
+    matchLabels:
+      app: private-ingressgateway
+      istio: private-ingressgateway
+  endpoints:
+  - port: http-envoy-prom
+    interval: 15s
+    path: /stats/prometheus
+    scheme: http
+  namespaceSelector:
+    matchNames:
+    - hpa-example

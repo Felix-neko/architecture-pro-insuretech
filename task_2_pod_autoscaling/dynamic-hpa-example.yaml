@@ -50,7 +50,8 @@ spec:
             memory: 120Mi
 
 # Horizontal Pod Autoscaler
-# Автоматически масштабирует количество подов на основе потребления памяти
+# Автоматически масштабирует количество подов на основе RPS из Prometheus метрик
+# Правило масштабирования: 1 под на 150 RPS
 ---
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
@@ -64,15 +65,21 @@ spec:
   minReplicas: 2  # Минимальное количество подов
   maxReplicas: 10  # Максимальное количество подов
   metrics:
-  - type: Resource
-    resource:
-      name: memory
+  # Кастомная метрика RPS из Prometheus через Prometheus Adapter
+  - type: Object
+    object:
+      metric:
+        name: scaletestapp_requests_per_second
+      describedObject:
+        apiVersion: v1
+        kind: Namespace
+        name: hpa-example
       target:
-        type: AverageValue
-        averageValue: 30Mi  # Целевое абсолютное значение памяти на под
+        type: Value
+        value: "150"  # Целевое значение: 150 RPS на под
   behavior:
     scaleDown:
-      stabilizationWindowSeconds: 30  # Ожидание полминуты перед уменьшением количества подов
+      stabilizationWindowSeconds: 60  # Ожидание 1 минуты перед уменьшением количества подов
       policies:
       - type: Percent
         value: 50  # Уменьшать не более чем на 50% подов за раз
