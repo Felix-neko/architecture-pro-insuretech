@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import AsyncGenerator, List, Optional
 
 import asyncio
 import logging
@@ -83,6 +83,10 @@ class Book:
 class User:
     id: int
     name: str
+
+
+# Очередь событий для подписок
+book_events_queue: asyncio.Queue[Book] = asyncio.Queue()
 
 
 # ============ DataLoader функции ============
@@ -269,7 +273,54 @@ class Query2:
         return "bar-1"
 
 
-schema = strawberry.Schema(Query, types=[Book, Author, Publisher, Edition])
+@strawberry.input
+class CreateBookInput:
+    title: str
+    author_id: int
+
+
+@strawberry.type
+class Mutation:
+    @strawberry.mutation
+    async def create_book(self, input: CreateBookInput) -> Book:
+        async with AsyncSessionLocal() as session:
+            author = await session.get(AuthorModel, input.author_id)
+            if author is None:
+                raise ValueError(f"Автор с id={input.author_id} не найден")
+
+            book_model = BookModel(title=input.title, author_id=input.author_id)
+            session.add(book_model)
+            await session.commit()
+            await session.refresh(book_model)
+
+        new_book = Book(id=book_model.id, title=book_model.title, author_id=book_model.author_id)
+
+        # Инвалидируем кеши DataLoader'ов
+        books_by_author_loader.clear(input.author_id)
+        await book_events_queue.put(new_book)
+
+        return new_book
+
+
+@strawberry.type
+class Subscription:
+    @strawberry.subscription
+    async def book_created(self) -> AsyncGenerator[Book, None]:
+        while True:
+            book = await book_events_queue.get()
+            yield book
+
+    @strawberry.subscription
+    async def ticker(self, delay: float = 1.0, n_ticks: int = 10) -> AsyncGenerator[str, None]:
+        """Синтетическая подписка, выдающая ограниченное число событий."""
+        counter = 0
+        while counter < n_ticks:
+            await asyncio.sleep(delay)
+            counter += 1
+            yield f"tick #{counter} (delay={delay}s)"
+
+
+schema = strawberry.Schema(Query, mutation=Mutation, subscription=Subscription, types=[Book, Author, Publisher, Edition])
 
 graphql_app = GraphQLRouter(schema)
 

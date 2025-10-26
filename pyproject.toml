@@ -4,6 +4,10 @@ version = "0.1.0"
 description = "Add your description here"
 requires-python = ">=3.8"
 dependencies = [
+    "aiosqlite>=0.20.0",
     "locust",
     "pyspark==3.4.4",
+    "sqlalchemy[asyncio]>=2.0.44",
+    "strawberry-graphql[fastapi]>=0.255.0",
+    "uvicorn>=0.33.0",
 ]
