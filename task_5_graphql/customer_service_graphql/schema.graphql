@@ -1,0 +1,130 @@
+input CreateCustomerInput {
+  name: String!
+  age: Int!
+  email: String!
+  phone: String!
+  credit_score: Int!
+  is_verified: Boolean! = false
+}
+
+"""Клиент страхового агрегатора"""
+type Customer {
+  """Уникальный идентификатор клиента"""
+  id: Int!
+
+  """ФИО клиента"""
+  name: String
+
+  """Возраст клиента"""
+  age: Int
+
+  """Email клиента"""
+  email: String
+
+  """Контактный телефон клиента"""
+  phone: String
+
+  """Кредитный рейтинг (300-850)"""
+  credit_score: Int
+
+  """Прошёл ли клиент верификацию личности"""
+  is_verified: Boolean
+
+  """Список документов клиента (паспорт, водительские права и т.д.)"""
+  documents: [Document!]!
+
+  """Список родственников клиента (супруг, дети, родители и т.д.)"""
+  relatives: [Relative!]!
+}
+
+"""Date (isoformat)"""
+scalar Date
+
+"""Документ клиента (паспорт, водительские права и т.д.)"""
+type Document {
+  """Уникальный идентификатор документа"""
+  id: Int!
+
+  """ID клиента-владельца документа"""
+  customer_id: Int
+
+  """Тип документа"""
+  type: DocumentType
+
+  """Номер документа (серия + номер)"""
+  number: String
+
+  """Дата выдачи документа"""
+  issue_date: Date
+
+  """Дата окончания действия документа"""
+  expiry_date: Date
+
+  """Орган выдачи документа (МВД, ГИБДД и т.д.)"""
+  issuing_authority: String
+
+  """Прошёл ли документ проверку подлинности"""
+  is_verified: Boolean
+
+  """URL скана документа в хранилище"""
+  scan_url: String
+}
+
+enum DocumentType {
+  PASSPORT
+  DRIVERS_LICENSE
+  EMPLOYMENT_CERTIFICATE
+  INCOME_CERTIFICATE
+  OTHER
+}
+
+type Mutation {
+  create_customer(input: CreateCustomerInput!): Customer!
+}
+
+type Query {
+  customer(id: Int!): Customer
+  customers(ids: [Int!] = null): [Customer!]!
+  document(id: Int!): Document
+  relative(id: Int!): Relative
+}
+
+enum RelationType {
+  SPOUSE
+  CHILD
+  PARENT
+  SIBLING
+  GUARDIAN
+  BENEFICIARY
+}
+
+"""Родственник клиента (супруг, ребёнок, родитель и т.д.)"""
+type Relative {
+  """Уникальный идентификатор родственника"""
+  id: Int!
+
+  """ID клиента, к которому относится родственник"""
+  customer_id: Int
+
+  """Тип родства"""
+  relation_type: RelationType
+
+  """ФИО родственника"""
+  name: String
+
+  """Возраст родственника"""
+  age: Int
+
+  """Контактный телефон родственника"""
+  phone: String
+
+  """Является ли иждивенцем (дети <18, родители >65)"""
+  is_dependent: Boolean
+
+  """Вклад в семейный доход (%)"""
+  income_contribution: Float
+}
+
+type Subscription {
+  ticker(delay: Float! = 1, n_ticks: Int! = 10): String!
+}
