@@ -72,19 +72,16 @@ NGINX будет торчать наружу через NodePort по порту
 ### Конфигурация nginx
 
 ```nginx
-http {
-  # Создаём зону для rate limiting
-  limit_req_zone $binary_remote_addr zone=ratelimit:10m rate=20r/m;
-  
-  server {
-    location / {
-      # Применяем rate limiting
-      limit_req zone=ratelimit burst=5 nodelay;
-      
-      proxy_pass http://backend;
-    }
-  }
-}
+# $binary_remote_addr - IP адрес клиента в бинарном формате (экономия памяти)
+# zone=ratelimit:10m - имя зоны и размер (10MB хватит для ~160k IP адресов)
+# rate=20r/m - лимит: 20 запросов в МИНУТУ (алгоритм leaky bucket)
+
+limit_req_zone $binary_remote_addr zone=ratelimit:10m rate=20r/m;
+
+# HTTP статус код при превышении лимита
+# 429 = Too Many Requests (стандартный код для rate limiting)
+
+limit_req_status 429;
 ```
 
 ### Поведение
