@@ -66,7 +66,7 @@ spec:
           requests:  # Минимальные ресурсы для запуска
             memory: 16Mi
           limits:  # Максимальные ресурсы
-            memory: 30Mi
+            memory: 64Mi
 
 # Horizontal Pod Autoscaler
 # Автоматически масштабирует количество подов на основе потребления памяти
@@ -91,7 +91,7 @@ spec:
         averageValue: 24Mi  # Целевое абсолютное значение памяти на под
   behavior:
     scaleDown:
-      stabilizationWindowSeconds: 30  # Ожидание полминуты перед уменьшением количества подов
+      stabilizationWindowSeconds: 60  # Ожидание в минуту перед уменьшением количества подов
       policies:
       - type: Percent
         value: 50  # Уменьшать не более чем на 50% подов за раз
