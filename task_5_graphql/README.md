@@ -229,4 +229,3 @@ type Relative {
    - Все поля в `snake_case` (настроено через `NameConverter(auto_camel_case=False)`)
    - Соответствует Python-стилю кодирования
 
-]()

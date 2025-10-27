@@ -7,9 +7,9 @@ echo "=========================================="
 echo "=== Удаление приложения ==="
 echo "=========================================="
 
-# Удаляем ServiceMonitor
-echo "Удаление ServiceMonitor..."
-kubectl delete -f $BASEDIR/prometheus-servicemonitor.yaml -n $NAMESPACE 2>/dev/null || echo "ServiceMonitor уже удален"
+# Удаляем ресурсы monitoring-bundle (ConfigMap, NodePort сервисы, ServiceMonitor)
+echo "Удаление monitoring-bundle ресурсов..."
+kubectl delete -f $BASEDIR/monitoring-bundle.yaml --ignore-not-found
 
 # Удаляем манифесты приложения
 echo "Удаление манифестов приложения..."
@@ -43,7 +43,7 @@ echo "Удаление завершено!"
 echo "=========================================="
 echo ""
 echo "Компоненты удалены:"
-echo "  ✓ ServiceMonitor (namespace: $NAMESPACE)"
+echo "  ✓ monitoring-bundle ресурсы (namespace: $NAMESPACE и $NAMESPACE_FOR_MONITORING)"
 echo "  ✓ ScaleTestApp с HPA (namespace: $NAMESPACE)"
 echo "  ✓ Istio Private IngressGateway (namespace: $NAMESPACE)"
 echo "  ✓ Prometheus Adapter (namespace: $NAMESPACE_FOR_MONITORING)"

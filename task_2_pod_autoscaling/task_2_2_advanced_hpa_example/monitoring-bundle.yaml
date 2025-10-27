@@ -1,0 +1,701 @@
+# ============================================================================
+# МОНИТОРИНГ ДЛЯ ADVANCED HPA EXAMPLE
+# ============================================================================
+# Этот файл содержит все ресурсы для настройки мониторинга приложения:
+# 1. Prometheus Adapter - для преобразования метрик Prometheus в Custom Metrics API
+# 2. ServiceMonitor - для сбора метрик с Istio Gateway
+# 3. NodePort сервисы - для внешнего доступа к Prometheus и Grafana
+# 4. Grafana Dashboard - для визуализации метрик RPS
+# ============================================================================
+
+---
+# ============================================================================
+# PROMETHEUS ADAPTER - КОНФИГУРАЦИЯ
+# ============================================================================
+# ConfigMap с настройками для Prometheus Adapter.
+# Prometheus Adapter преобразует метрики из Prometheus в формат Custom Metrics API,
+# который используется HPA (Horizontal Pod Autoscaler) для автомасштабирования.
+# ============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-adapter-values
+  namespace: advanced-hpa-example-monitoring
+data:
+  values.yaml: |
+    # Подключение к Prometheus
+    # URL внутреннего сервиса Prometheus в кластере
+    prometheus:
+      url: http://prometheus-kube-prometheus-prometheus.advanced-hpa-example-monitoring.svc.cluster.local
+      port: 9090
+
+    # Правила преобразования метрик
+    # Определяют, как метрики Prometheus преобразуются в Custom Metrics
+    rules:
+      custom:
+      # Правило для метрики RPS (requests per second) приложения scaletestapp
+      - seriesQuery: 'istio_requests_total{source_workload="private-ingressgateway",destination_service="scaletestapp-service.advanced-hpa-example.svc.cluster.local"}'
+        # Определение ресурса Kubernetes, к которому привязана метрика
+        resources:
+          overrides:
+            destination_service_namespace:
+              resource: namespace
+        # Имя метрики в Custom Metrics API
+        name:
+          as: scaletestapp_requests_per_second
+        # PromQL запрос для вычисления метрики
+        # Вычисляет скорость запросов (rate) за последнюю минуту
+        metricsQuery: |
+          sum(rate(istio_requests_total{
+            source_workload="private-ingressgateway",
+            destination_service="scaletestapp-service.advanced-hpa-example.svc.cluster.local",
+            <<.LabelMatchers>>
+          }[1m])) by (<<.GroupBy>>)
+
+    # Создание RBAC ресурсов (Role-Based Access Control)
+    # Необходимо для доступа адаптера к API Kubernetes
+    rbac:
+      create: true
+
+    # Создание ServiceAccount для Prometheus Adapter
+    serviceAccount:
+      create: true
+      name: prometheus-adapter
+
+    # Ресурсы для контейнера Prometheus Adapter
+    resources:
+      requests:
+        cpu: 100m      # Минимальное количество CPU
+        memory: 128Mi  # Минимальное количество памяти
+      limits:
+        cpu: 500m      # Максимальное количество CPU
+        memory: 512Mi  # Максимальное количество памяти
+
+    # Уровень логирования (4 = debug, полезно для отладки)
+    logLevel: 4
+---
+# ============================================================================
+# SERVICE MONITOR - СБОР МЕТРИК С ISTIO GATEWAY
+# ============================================================================
+# ServiceMonitor - это Custom Resource от Prometheus Operator.
+# Он автоматически настраивает Prometheus для сбора метрик с указанных сервисов.
+# В данном случае собираются метрики с private-ingressgateway (Istio Gateway).
+# ============================================================================
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: private-ingressgateway-metrics
+  namespace: advanced-hpa-example
+  labels:
+    app: private-ingressgateway
+    release: prometheus  # Метка для обнаружения Prometheus Operator
+spec:
+  # Селектор для выбора сервисов, с которых нужно собирать метрики
+  selector:
+    matchLabels:
+      app: private-ingressgateway
+      istio: private-ingressgateway
+  # Настройки эндпоинтов для сбора метрик
+  endpoints:
+  - port: http-envoy-prom        # Порт с метриками Envoy (часть Istio)
+    interval: 15s                 # Интервал сбора метрик (каждые 15 секунд)
+    path: /stats/prometheus       # Путь к метрикам в формате Prometheus
+    scheme: http                  # Протокол подключения
+  # Выбор namespace, в котором искать сервисы
+  namespaceSelector:
+    matchNames:
+    - advanced-hpa-example
+---
+# ============================================================================
+# NODEPORT СЕРВИС ДЛЯ PROMETHEUS
+# ============================================================================
+# Создает внешний доступ к веб-интерфейсу Prometheus через NodePort.
+# Позволяет открыть Prometheus UI в браузере по адресу http://<node-ip>:30003
+# Используется для просмотра метрик, выполнения PromQL запросов и отладки.
+# ============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus-kube-prometheus-prometheus-nodeport
+  namespace: advanced-hpa-example-monitoring
+  labels:
+    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/instance: prometheus-kube-prometheus-prometheus
+    app: prometheus-kube-prometheus-prometheus
+spec:
+  type: NodePort  # Тип сервиса для внешнего доступа
+  # Селектор для поиска подов Prometheus
+  selector:
+    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/instance: prometheus-kube-prometheus-prometheus
+  ports:
+  - name: web
+    port: 9090          # Внутренний порт сервиса
+    targetPort: 9090    # Порт контейнера Prometheus
+    nodePort: 30003     # Внешний порт на ноде (доступен извне кластера)
+    protocol: TCP
+---
+# ============================================================================
+# NODEPORT СЕРВИС ДЛЯ GRAFANA
+# ============================================================================
+# Создает внешний доступ к веб-интерфейсу Grafana через NodePort.
+# Позволяет открыть Grafana UI в браузере по адресу http://<node-ip>:30004
+# Используется для визуализации метрик через дашборды.
+# Логин по умолчанию: admin / prom-operator
+# ============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus-grafana-nodeport
+  namespace: advanced-hpa-example-monitoring
+  labels:
+    app.kubernetes.io/name: grafana
+    app.kubernetes.io/instance: prometheus
+spec:
+  type: NodePort  # Тип сервиса для внешнего доступа
+  # Селектор для поиска подов Grafana
+  selector:
+    app.kubernetes.io/name: grafana
+    app.kubernetes.io/instance: prometheus
+  ports:
+  - name: http
+    port: 80            # Внутренний порт сервиса
+    targetPort: 3000    # Порт контейнера Grafana
+    nodePort: 30004     # Внешний порт на ноде (доступен извне кластера)
+    protocol: TCP
+---
+# ============================================================================
+# GRAFANA DASHBOARD - МОНИТОРИНГ RPS ISTIO GATEWAY
+# ============================================================================
+# ConfigMap с JSON-конфигурацией дашборда Grafana.
+# Метка "grafana_dashboard: 1" позволяет Grafana автоматически импортировать дашборд.
+# Дашборд отображает метрики RPS (requests per second) для private-ingressgateway:
+# - Общий RPS (Total RPS)
+# - Успешные запросы (2xx коды ответа)
+# - Неуспешные запросы (не-2xx коды ответа)
+# - Текущие значения в виде gauge-индикаторов
+# ============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: istio-gateway-dashboard
+  namespace: advanced-hpa-example-monitoring
+  labels:
+    grafana_dashboard: "1"  # Метка для автоматического импорта в Grafana
+data:
+  istio-gateway-dashboard.json: |
+    {
+      # Настройки аннотаций дашборда
+      "annotations": {
+        "list": [
+          {
+            "builtIn": 1,
+            "datasource": {
+              "type": "grafana",
+              "uid": "-- Grafana --"
+            },
+            "enable": true,
+            "hide": true,
+            "iconColor": "rgba(0, 211, 255, 1)",
+            "name": "Annotations & Alerts",
+            "type": "dashboard"
+          }
+        ]
+      },
+      "editable": true,              # Дашборд можно редактировать в UI
+      "fiscalYearStartMonth": 0,
+      "graphTooltip": 0,
+      "id": null,
+      "links": [],
+      "liveNow": false,
+      # Массив панелей (графиков) на дашборде
+      "panels": [
+        # ====================================================================
+        # ПАНЕЛЬ 1: График общего RPS (Total RPS)
+        # ====================================================================
+        # Временной график (timeseries) показывающий общее количество
+        # запросов в секунду через private-ingressgateway.
+        # Используется окно 30 секунд для быстрого обновления метрик.
+        # ====================================================================
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          # Конфигурация отображения графика
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"  # Классическая цветовая палитра
+              },
+              "custom": {
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "drawStyle": "line",       # Линейный график
+                "fillOpacity": 10,         # Прозрачность заливки под линией
+                "gradientMode": "none",
+                "hideFrom": {
+                  "tooltip": false,
+                  "viz": false,
+                  "legend": false
+                },
+                "lineInterpolation": "linear",
+                "lineWidth": 2,            # Толщина линии
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "never",     # Не показывать точки на графике
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              },
+              "unit": "reqps"              # Единица измерения: requests per second
+            },
+            "overrides": []
+          },
+          # Позиция и размер панели на дашборде
+          "gridPos": {
+            "h": 8,   # Высота: 8 единиц
+            "w": 24,  # Ширина: 24 единицы (полная ширина)
+            "x": 0,   # Позиция X
+            "y": 0    # Позиция Y
+          },
+          "id": 1,
+          # Настройки легенды и подсказок
+          "options": {
+            "legend": {
+              "calcs": ["mean", "lastNotNull", "max"],  # Показывать среднее, последнее и макс. значения
+              "displayMode": "table",
+              "placement": "right",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "none"
+            }
+          },
+          # Prometheus запросы для получения данных
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              # PromQL запрос: суммирует rate запросов за последние 30 секунд
+              # Использует метрику istio_requests_total от private-ingressgateway
+              "expr": "sum(rate(istio_requests_total{source_workload=\"private-ingressgateway\"}[30s]))",
+              "legendFormat": "Total RPS",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Private Istio Gateway - Total RPS",
+          "type": "timeseries"
+        },
+        # ====================================================================
+        # ПАНЕЛЬ 2: График успешных и неуспешных запросов
+        # ====================================================================
+        # Временной график показывающий две линии:
+        # - Зеленая: успешные запросы (HTTP коды 2xx)
+        # - Красная: неуспешные запросы (HTTP коды не-2xx)
+        # Позволяет отслеживать качество обработки запросов.
+        # ====================================================================
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "tooltip": false,
+                  "viz": false,
+                  "legend": false
+                },
+                "lineInterpolation": "linear",
+                "lineWidth": 2,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "never",
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              },
+              "unit": "reqps"
+            },
+            # Переопределения цветов для конкретных серий данных
+            "overrides": [
+              {
+                # Успешные запросы - зеленый цвет
+                "matcher": {
+                  "id": "byName",
+                  "options": "Successful RPS (2xx)"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "fixedColor": "green",
+                      "mode": "fixed"
+                    }
+                  }
+                ]
+              },
+              {
+                # Неуспешные запросы - красный цвет
+                "matcher": {
+                  "id": "byName",
+                  "options": "Failed RPS (non-2xx)"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "fixedColor": "red",
+                      "mode": "fixed"
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          # Позиция панели: вторая строка, полная ширина
+          "gridPos": {
+            "h": 8,
+            "w": 24,
+            "x": 0,
+            "y": 8
+          },
+          "id": 2,
+          "options": {
+            "legend": {
+              "calcs": ["mean", "lastNotNull", "max"],
+              "displayMode": "table",
+              "placement": "right",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "none"
+            }
+          },
+          # Два Prometheus запроса для успешных и неуспешных запросов
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              # Запрос A: успешные запросы (коды ответа 2xx)
+              # response_code=~"2.." - регулярное выражение для кодов 200-299
+              "expr": "sum(rate(istio_requests_total{source_workload=\"private-ingressgateway\",response_code=~\"2..\"}[1m]))",
+              "legendFormat": "Successful RPS (2xx)",
+              "range": true,
+              "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              # Запрос B: неуспешные запросы (коды ответа не-2xx)
+              # response_code!~"2.." - все коды кроме 2xx (например, 4xx, 5xx)
+              "expr": "sum(rate(istio_requests_total{source_workload=\"private-ingressgateway\",response_code!~\"2..\"}[1m]))",
+              "legendFormat": "Failed RPS (non-2xx)",
+              "range": true,
+              "refId": "B"
+            }
+          ],
+          "title": "Private Istio Gateway - Success vs Failed RPS",
+          "type": "timeseries"
+        },
+        # ====================================================================
+        # ПАНЕЛЬ 3: Индикатор текущего общего RPS
+        # ====================================================================
+        # Gauge (стрелочный индикатор) показывающий текущее значение RPS.
+        # Пороги цветов:
+        # - Зеленый: < 100 RPS (нормальная нагрузка)
+        # - Желтый: 100-150 RPS (повышенная нагрузка)
+        # - Красный: > 150 RPS (высокая нагрузка)
+        # ====================================================================
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"  # Цвет зависит от порогов
+              },
+              "mappings": [],
+              # Определение порогов для изменения цвета индикатора
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null  # По умолчанию зеленый
+                  },
+                  {
+                    "color": "yellow",
+                    "value": 100   # Желтый при >= 100 RPS
+                  },
+                  {
+                    "color": "red",
+                    "value": 150   # Красный при >= 150 RPS
+                  }
+                ]
+              },
+              "unit": "reqps"
+            },
+            "overrides": []
+          },
+          # Позиция: третья строка, левая треть
+          "gridPos": {
+            "h": 6,
+            "w": 8,
+            "x": 0,
+            "y": 16
+          },
+          "id": 3,
+          "options": {
+            "orientation": "auto",
+            "reduceOptions": {
+              "values": false,
+              "calcs": ["lastNotNull"],  # Показывать последнее непустое значение
+              "fields": ""
+            },
+            "showThresholdLabels": false,
+            "showThresholdMarkers": true
+          },
+          "pluginVersion": "10.0.0",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              # Запрос: общий RPS за последнюю минуту
+              "expr": "sum(rate(istio_requests_total{source_workload=\"private-ingressgateway\"}[1m]))",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Current Total RPS",
+          "type": "gauge"
+        },
+        # ====================================================================
+        # ПАНЕЛЬ 4: Индикатор текущего успешного RPS
+        # ====================================================================
+        # Gauge показывающий количество успешных запросов (HTTP 2xx).
+        # Всегда зеленый цвет, так как успешные запросы - это хорошо.
+        # ====================================================================
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",  # Всегда зеленый
+                    "value": null
+                  }
+                ]
+              },
+              "unit": "reqps"
+            },
+            "overrides": []
+          },
+          # Позиция: третья строка, центральная треть
+          "gridPos": {
+            "h": 6,
+            "w": 8,
+            "x": 8,
+            "y": 16
+          },
+          "id": 4,
+          "options": {
+            "orientation": "auto",
+            "reduceOptions": {
+              "values": false,
+              "calcs": ["lastNotNull"],
+              "fields": ""
+            },
+            "showThresholdLabels": false,
+            "showThresholdMarkers": true
+          },
+          "pluginVersion": "10.0.0",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              # Запрос: только успешные запросы (коды 2xx)
+              "expr": "sum(rate(istio_requests_total{source_workload=\"private-ingressgateway\",response_code=~\"2..\"}[1m]))",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Current Successful RPS",
+          "type": "gauge"
+        },
+        # ====================================================================
+        # ПАНЕЛЬ 5: Индикатор текущего неуспешного RPS
+        # ====================================================================
+        # Gauge показывающий количество неуспешных запросов (не-2xx коды).
+        # Пороги цветов:
+        # - Зеленый: 0 неуспешных запросов (все хорошо)
+        # - Красный: >= 1 неуспешный запрос (есть проблемы)
+        # ====================================================================
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "mappings": [],
+              # Пороги для индикации проблем
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",  # Зеленый при 0 ошибок
+                    "value": null
+                  },
+                  {
+                    "color": "red",    # Красный при >= 1 ошибке
+                    "value": 1
+                  }
+                ]
+              },
+              "unit": "reqps"
+            },
+            "overrides": []
+          },
+          # Позиция: третья строка, правая треть
+          "gridPos": {
+            "h": 6,
+            "w": 8,
+            "x": 16,
+            "y": 16
+          },
+          "id": 5,
+          "options": {
+            "orientation": "auto",
+            "reduceOptions": {
+              "values": false,
+              "calcs": ["lastNotNull"],
+              "fields": ""
+            },
+            "showThresholdLabels": false,
+            "showThresholdMarkers": true
+          },
+          "pluginVersion": "10.0.0",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              # Запрос: только неуспешные запросы (коды не-2xx)
+              "expr": "sum(rate(istio_requests_total{source_workload=\"private-ingressgateway\",response_code!~\"2..\"}[1m]))",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Current Failed RPS",
+          "type": "gauge"
+        }
+      ],
+      # Интервал обновления дашборда - каждые 5 секунд
+      "refresh": "5s",
+      "schemaVersion": 38,
+      "style": "dark",  # Темная тема
+      # Теги для категоризации дашборда
+      "tags": ["istio", "gateway", "private"],
+      # Настройки шаблонизации (переменных) - не используется
+      "templating": {
+        "list": []
+      },
+      # Временной диапазон по умолчанию
+      "time": {
+        "from": "now-15m",  # Показывать данные за последние 15 минут
+        "to": "now"         # До текущего момента
+      },
+      "timepicker": {},
+      "timezone": "",  # Использовать часовой пояс браузера
+      # Название дашборда
+      "title": "Private Istio Gateway - RPS Monitoring",
+      # Уникальный идентификатор дашборда
+      "uid": "private-istio-gateway-rps",
+      "version": 1,
+      "weekStart": ""
+    }
