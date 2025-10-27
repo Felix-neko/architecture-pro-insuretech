@@ -26,7 +26,7 @@ metadata:
   name: scaletestapp
 spec:
   serviceName: scaletestapp-service
-  replicas: 2  # Начальное количество подов (будет управляться HPA)
+  replicas: 1  # Начальное количество подов (будет управляться HPA)
   selector:
     matchLabels:
       app: scaletestapp
@@ -62,7 +62,7 @@ spec:
     apiVersion: apps/v1
     kind: StatefulSet
     name: scaletestapp
-  minReplicas: 2  # Минимальное количество подов
+  minReplicas: 1  # Минимальное количество подов
   maxReplicas: 10  # Максимальное количество подов
   metrics:
   # Кастомная метрика RPS из Prometheus через Prometheus Adapter
@@ -73,7 +73,7 @@ spec:
       describedObject:
         apiVersion: v1
         kind: Namespace
-        name: hpa-example
+        name: advanced-hpa-example
       target:
         type: Value
         value: "150"  # Целевое значение: 150 RPS на под
@@ -183,7 +183,7 @@ spec:
         - name: ISTIO_META_WORKLOAD_NAME
           value: private-ingressgateway
         - name: ISTIO_META_OWNER
-          value: kubernetes://apis/apps/v1/namespaces/hpa-example/deployments/private-ingressgateway
+          value: kubernetes://apis/apps/v1/namespaces/advanced-hpa-example/deployments/private-ingressgateway
         - name: ISTIO_META_MESH_ID
           value: cluster.local
         - name: TRUST_DOMAIN
@@ -360,7 +360,7 @@ spec:
         prefix: "/"
     route:
     - destination:
-        host: scaletestapp-service.hpa-example.svc.cluster.local
+        host: scaletestapp-service.advanced-hpa-example.svc.cluster.local
         port:
           number: 8080
 
