@@ -1,0 +1,306 @@
+---
+# ============================================
+# ConfigMap с конфигурацией для backend nginx серверов
+# ============================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nginx-backend-config
+data:
+  nginx.conf: |
+    # ============================================
+    # Nginx Backend Server Configuration
+    # ============================================
+    
+    events {
+      # Максимальное количество одновременных соединений на worker процесс
+      worker_connections 1024;
+    }
+    
+    http {
+      server {
+        # Слушаем на порту 80
+        listen 80;
+        
+        # Основной endpoint - возвращает имя пода
+        location / {
+          # Устанавливаем тип контента
+          default_type text/html;
+          
+          # Возвращаем HTML с именем пода
+          # $hostname - переменная nginx, содержащая hostname (имя пода в Kubernetes)
+          # Это позволяет увидеть round-robin балансировку
+          return 200 '<html><body><h1>Hello from pod: $hostname</h1><p>Server: nginx backend</p></body></html>\n';
+        }
+        
+        # Health check endpoint для Kubernetes probes
+        location /health {
+          # Простой ответ OK для liveness/readiness проверок
+          return 200 'OK';
+          add_header Content-Type text/plain;
+        }
+      }
+    }
+
+---
+# StatefulSet с 3 nginx backend подами
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: nginx-backend
+spec:
+  serviceName: nginx-backend-headless
+  replicas: 3
+  selector:
+    matchLabels:
+      app: nginx-backend
+  template:
+    metadata:
+      labels:
+        app: nginx-backend
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:1.25-alpine
+        ports:
+        - containerPort: 80
+          name: http
+        volumeMounts:
+        - name: nginx-config
+          mountPath: /etc/nginx/nginx.conf
+          subPath: nginx.conf
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 80
+          initialDelaySeconds: 3
+          periodSeconds: 5
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "100m"
+          limits:
+            memory: "128Mi"
+            cpu: "200m"
+      volumes:
+      - name: nginx-config
+        configMap:
+          name: nginx-backend-config
+
+---
+# Headless Service для StatefulSet (для DNS записей)
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-backend-headless
+spec:
+  clusterIP: None
+  selector:
+    app: nginx-backend
+  ports:
+  - port: 80
+    targetPort: 80
+    name: http
+
+---
+# ClusterIP Service для доступа к backend подам
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-backend-service
+spec:
+  type: ClusterIP
+  selector:
+    app: nginx-backend
+  ports:
+  - port: 80
+    targetPort: 80
+    name: http
+
+---
+# ConfigMap с конфигурацией для nginx load balancer
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nginx-lb-config
+data:
+  nginx.conf: |
+    # ============================================
+    # Nginx Load Balancer с Rate Limiting
+    # ============================================
+    
+    events {
+      # Максимальное количество одновременных соединений на worker процесс
+      worker_connections 1024;
+    }
+    
+    http {
+      # ============================================
+      # Rate Limiting Configuration
+      # ============================================
+      
+      # Создаём зону для rate limiting
+      # $binary_remote_addr - IP адрес клиента в бинарном формате (экономия памяти)
+      # zone=ratelimit:10m - имя зоны и размер (10MB хватит для ~160k IP адресов)
+      # rate=20r/m - лимит: 20 запросов в МИНУТУ (алгоритм leaky bucket)
+      limit_req_zone $binary_remote_addr zone=ratelimit:10m rate=20r/m;
+      
+      # Уровень логирования для событий rate limiting (warn/error/info)
+      limit_req_log_level warn;
+      
+      # HTTP статус код при превышении лимита
+      # 429 = Too Many Requests (стандартный код для rate limiting)
+      limit_req_status 429;
+      
+      # ============================================
+      # Backend Upstream Configuration
+      # ============================================
+      
+      # Upstream группа backend серверов
+      # По умолчанию используется round-robin балансировка
+      upstream backend {
+        # Используем ClusterIP сервис, который распределяет запросы по StatefulSet
+        # Kube-DNS автоматически резолвит имя внутри namespace (добавлять namespace не нужно)
+        server nginx-backend-service:80;
+      }
+      
+      # ============================================
+      # Server Configuration
+      # ============================================
+      
+      server {
+        # Слушаем на порту 80
+        listen 80;
+        
+        # Основной location с rate limiting
+        location / {
+          # ============================================
+          # Rate Limiting Rules
+          # ============================================
+          # zone=ratelimit - используем созданную выше зону
+          # burst=20 - разрешить всплеск до 20 дополнительных запросов
+          #            (итого можно принять до 20 запросов подряд)
+          # nodelay - обрабатывать burst запросы немедленно без задержки
+          # 
+          # Поведение с nodelay (текущая настройка):
+          # - Запросы 1-20: обрабатываются мгновенно (используют burst)
+          # - Запрос 21+: отклоняется с HTTP 429 (burst исчерпан)
+          # - Burst восстанавливается со скоростью 20 запросов/минуту (1 запрос каждые 3 сек)
+          # 
+          # ВАЖНО: Nginx НЕ использует скользящее окно!
+          # Это leaky bucket: запросы "вытекают" с постоянной скоростью 20/мин
+          limit_req zone=ratelimit burst=20 nodelay;
+          
+          # ============================================
+          # Proxy Configuration
+          # ============================================
+          # Проксируем запросы на backend upstream
+          proxy_pass http://backend;
+          
+          # Передаём оригинальные заголовки
+          proxy_set_header Host $host;
+          proxy_set_header X-Real-IP $remote_addr;
+          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+          
+          # ============================================
+          # Response Headers (для отладки)
+          # ============================================
+          # Показываем какой backend сервер обработал запрос
+          add_header X-Backend-Server $upstream_addr always;
+          # Информируем клиента о лимите
+          add_header X-RateLimit-Limit "20 requests per minute" always;
+        }
+        
+        # ============================================
+        # Health Check Endpoint (без rate limiting)
+        # ============================================
+        location /health {
+          # Простой health check для Kubernetes probes
+          # Не применяем rate limiting к health checks
+          return 200 'Load Balancer OK';
+          add_header Content-Type text/plain;
+        }
+        
+        # ============================================
+        # Status Endpoint (без rate limiting)
+        # ============================================
+        location /status {
+          # Информационная страница о load balancer
+          # Не применяем rate limiting к status endpoint
+          default_type text/html;
+          return 200 '<html><body><h1>Nginx Load Balancer</h1><p>Status: Running</p><p>Backend servers: 3</p><p>Rate limit: 20 req/min per IP</p><p>Algorithm: Leaky Bucket</p></body></html>\n';
+        }
+      }
+    }
+
+---
+# Deployment для nginx load balancer
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-lb
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nginx-lb
+  template:
+    metadata:
+      labels:
+        app: nginx-lb
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:1.25-alpine
+        ports:
+        - containerPort: 80
+          name: http
+        volumeMounts:
+        - name: nginx-config
+          mountPath: /etc/nginx/nginx.conf
+          subPath: nginx.conf
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 80
+          initialDelaySeconds: 3
+          periodSeconds: 5
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "100m"
+          limits:
+            memory: "128Mi"
+            cpu: "200m"
+      volumes:
+      - name: nginx-config
+        configMap:
+          name: nginx-lb-config
+
+---
+# NodePort Service для доступа к load balancer снаружи
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-lb-service
+spec:
+  type: NodePort
+  selector:
+    app: nginx-lb
+  ports:
+  - port: 80
+    targetPort: 80
+    nodePort: 30002
+    name: http
